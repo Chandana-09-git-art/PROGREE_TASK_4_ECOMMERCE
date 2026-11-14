@@ -228,7 +228,8 @@ app.post("/api/checkout", authenticate, async (req, res) => {
 });
 
 // Stripe webhook: inventory is reduced only after verified payment.
-app.post("/api/webhook", express.raw({ type: "application/json" }), async (req, res) => {
+
+app.post("/api/webhook", async (req, res) => {
   if (!stripe || !process.env.STRIPE_WEBHOOK_SECRET) {
     return res.status(503).send("Webhook is not configured");
   }
@@ -238,54 +239,84 @@ app.post("/api/webhook", express.raw({ type: "application/json" }), async (req, 
   try {
     event = stripe.webhooks.constructEvent(
       req.rawBody,
-req.headers["stripe-signature"],
-process.env.STRIPE_WEBHOOK_SECRET
+      req.headers["stripe-signature"],
+      process.env.STRIPE_WEBHOOK_SECRET
     );
   } catch (error) {
     return res.status(400).send("Invalid webhook signature");
   }
 
-  if (event.type === "checkout.session.completed") {
-    const session = event.data.object;
-    const client = await pool.connect();
-
-    try {
-      await client.query("BEGIN");
-
-      const userId = Number(session.client_reference_id);
-      if (!userId) throw new Error("Missing user reference");
-
-      const cart = await client.query(
-        `SELECT c.product_id,c.quantity,p.stock
-         FROM cart_items c JOIN products p ON p.id=c.product_id
-         WHERE c.user_id=$1 FOR UPDATE`,
-        [userId]
-      );
-
-      for (const item of cart.rows) {
-        if (item.quantity > item.stock) {
-          throw new Error("Insufficient inventory");
-        }
-        await client.query(
-          "UPDATE products SET stock=stock-$1 WHERE id=$2",
-          [item.quantity, item.product_id]
-        );
-      }
-
-      await client.query("DELETE FROM cart_items WHERE user_id=$1", [userId]);
-      await client.query("COMMIT");
-    } catch (error) {
-      await client.query("ROLLBACK");
-      console.error("Inventory update failed:", error.message);
-    } finally {
-      client.release();
-    }
+  if (event.type !== "checkout.session.completed") {
+    return res.json({ received: true });
   }
 
-  res.json({ received: true });
-});
+  const session = event.data.object;
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  if (session.payment_status !== "paid") {
+    return res.json({ received: true, message: "Payment not completed" });
+  }
+
+  const userId = Number(session.client_reference_id);
+
+  if (!Number.isInteger(userId) || userId < 1) {
+    return res.status(400).send("Invalid customer reference");
+  }
+
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    const order = await client.query(
+      `INSERT INTO orders(user_id, stripe_session_id, amount, status)
+       VALUES($1, $2, $3, 'paid')
+       ON CONFLICT(stripe_session_id) DO NOTHING
+       RETURNING id`,
+      [userId, session.id, (session.amount_total || 0) / 100]
+    );
+
+    // Prevent duplicate payment notifications from reducing stock twice.
+    if (order.rowCount === 0) {
+      await client.query("COMMIT");
+      return res.json({ received: true, duplicate: true });
+    }
+
+    const cart = await client.query(
+      `SELECT c.product_id, c.quantity, p.stock
+       FROM cart_items c
+       JOIN products p ON p.id = c.product_id
+       WHERE c.user_id = $1
+       FOR UPDATE OF p`,
+      [userId]
+    );
+
+    if (cart.rows.length === 0) {
+      throw new Error("Cart is empty");
+    }
+
+    for (const item of cart.rows) {
+      if (item.quantity > item.stock) {
+        throw new Error("Insufficient inventory");
+      }
+
+      await client.query(
+        "UPDATE products SET stock = stock - $1 WHERE id = $2",
+        [item.quantity, item.product_id]
+      );
+    }
+
+    await client.query(
+      "DELETE FROM cart_items WHERE user_id = $1",
+      [userId]
+    );
+
+    await client.query("COMMIT");
+    return res.json({ received: true });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    console.error("Payment processing failed:", error.message);
+    return res.status(500).send("Payment processing failed; please retry");
+  } finally {
+    client.release();
+  }
 });
-      
