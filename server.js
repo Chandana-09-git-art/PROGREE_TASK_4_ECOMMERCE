@@ -23,10 +23,6 @@ const stripe = process.env.STRIPE_SECRET_KEY
 
 app.use(cors());
 
-app.get("/", (req, res) => {
-  res.send("Progree Secure E-Commerce API is running!");
-});
-
 app.get("/api/health", (req, res) => {
   res.json({ status: "OK", project: "Progree E-Commerce" });
 });
