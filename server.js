@@ -31,7 +31,13 @@ app.get("/api/health", (req, res) => {
   res.json({ status: "OK", project: "Progree E-Commerce" });
 });
 
-app.use(express.json());
+app.use(express.json({
+  verify: (req, res, buf) => {
+    req.rawBody = Buffer.from(buf);
+  }
+}));
+
+app.use(express.static("public"));
 
 app.post("/api/register", async (req, res) => {
   try {
