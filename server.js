@@ -212,6 +212,7 @@ app.post("/api/checkout", authenticate, async (req, res) => {
 
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
+      client_reference_id: String(req.user.id),
       line_items: cart.rows.map(item => ({
         price_data: {
           currency: "inr",
