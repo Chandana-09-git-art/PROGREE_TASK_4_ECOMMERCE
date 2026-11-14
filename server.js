@@ -240,9 +240,9 @@ app.post("/api/webhook", express.raw({ type: "application/json" }), async (req, 
 
   try {
     event = stripe.webhooks.constructEvent(
-      req.body,
-      req.headers["stripe-signature"],
-      process.env.STRIPE_WEBHOOK_SECRET
+      req.rawBody,
+req.headers["stripe-signature"],
+process.env.STRIPE_WEBHOOK_SECRET
     );
   } catch (error) {
     return res.status(400).send("Invalid webhook signature");
