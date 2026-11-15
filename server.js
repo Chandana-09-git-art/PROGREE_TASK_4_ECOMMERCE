@@ -320,3 +320,6 @@ app.post("/api/webhook", async (req, res) => {
     client.release();
   }
 });
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
